@@ -1,0 +1,14 @@
+fastapi==0.109.0
+uvicorn[standard]==0.27.0
+python-multipart==0.0.6
+pydantic==2.5.3
+numpy==1.26.3
+opencv-python==4.9.0.80
+Pillow==10.2.0
+openai==1.12.0
+python-dotenv==1.0.1
+
+# 향후 딥페이크 탐지 모델 통합 시 필요한 라이브러리
+# tensorflow==2.15.0
+# torch==2.1.2
+# torchvision==0.16.2

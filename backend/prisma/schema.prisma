@@ -1,0 +1,57 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mysql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id            Int               @id @default(autoincrement())
+  username      String            @unique @db.VarChar(50)
+  email         String            @unique @db.VarChar(100)
+  passwordHash  String            @map("password_hash") @db.VarChar(255)
+  createdAt     DateTime          @default(now()) @map("created_at")
+  
+  detectionLogs    DetectionLog[]
+  communityReports CommunityReport[]
+
+  @@map("users")
+}
+
+model DetectionLog {
+  id         Int      @id @default(autoincrement())
+  userId     Int
+  videoUrl   String   @db.VarChar(500)
+  result     String   @default("pending") @db.VarChar(20)  // 'real', 'fake', 'uncertain', 'pending'
+  confidence Float    @default(0.0)
+  metrics    Json?    // AI 분석 메트릭 (6가지 지표)
+  report     String?  @db.Text  // GPT 생성 리포트
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("detection_logs")
+}
+
+model CommunityReport {
+  id        Int      @id @default(autoincrement())
+  userId    Int      @map("user_id")
+  title     String   @db.VarChar(200)
+  content   String   @db.Text
+  videoUrl  String?  @map("video_url") @db.VarChar(500)
+  status    String   @default("pending") @db.VarChar(20)  // 'pending', 'verified', 'rejected'
+  createdAt DateTime @default(now()) @map("created_at")
+  
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([status])
+  @@map("community_reports")
+}
