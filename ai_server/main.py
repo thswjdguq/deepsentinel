@@ -1,4 +1,4 @@
-from fastapi import FastAPI, File, UploadFile, HTTPException
+from fastapi import FastAPI, File, UploadFile, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Optional, Dict
@@ -8,6 +8,8 @@ import random
 import os
 from dotenv import load_dotenv
 from openai import OpenAI
+import asyncio
+import json
 
 # 환경 변수 로드
 load_dotenv()
@@ -18,7 +20,7 @@ client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 app = FastAPI(
     title="DeepSentinel AI Server",
     description="딥페이크 탐지 AI 분석 서버",
-    version="2.0.0"
+    version="2.1.0"
 )
 
 # CORS 설정
@@ -52,6 +54,14 @@ class AnalysisResponse(BaseModel):
     metrics: AnalysisMetrics
     report: str  # GPT 생성 리포트
     analysis_time: float  # 분석 소요 시간 (초)
+
+
+class URLAnalysisRequest(BaseModel):
+    """
+    URL 분석 요청 모델
+    """
+    url: str
+    platform: Optional[str] = None  # 'youtube', 'instagram', 'tiktok' 등
 
 
 def generate_analysis_metrics() -> AnalysisMetrics:
@@ -147,31 +157,28 @@ async def generate_gpt_report(
     }
     
     # GPT 프롬프트 구성
-    prompt = f"""너는 대한민국 사이버 수사대의 딥페이크 법의학 전문가야.
+    prompt = f"""대한민국 국가정보원 산하 디지털 포렌식 연구소 수석 분석관으로서, 다음 영상에 대한 공식 감정 보고서를 작성하십시오.
 
-다음 영상 분석 수치를 바탕으로 전문적인 감정 보고서를 작성해줘:
+[영상 감정 결과]
+판정: {result_labels[result]} ({confidence*100:.1f}%)
 
-[분석 수치]
-- 눈 깜빡임 자연도: {metrics.eye_blink_rate:.1f}/100
-- 음성-입술 동기화: {metrics.lip_sync_score:.1f}/100
-- 조명 일관성: {metrics.lighting_consistency:.1f}/100
-- 얼굴 인공물 지수: {metrics.facial_artifacts:.1f}/100
-- 텍스처 품질: {metrics.texture_quality:.1f}/100
-- 동작 부드러움: {metrics.motion_smoothness:.1f}/100
+[세부 분석 지표]
+1. 눈 깜빡임 자연도 (EAR): {metrics.eye_blink_rate:.1f}/100
+2. 음성-입술 동기화 정밀도 (MAR): {metrics.lip_sync_score:.1f}/100
+3. 조명 일관성 분석: {metrics.lighting_consistency:.1f}/100
+4. 얼굴 아티팩트 검출: {metrics.facial_artifacts:.1f}/100
+5. 텍스처 품질 평가: {metrics.texture_quality:.1f}/100
+6. 모션 자연도 분석: {metrics.motion_smoothness:.1f}/100
 
-[종합 판정]
-- 상태: {result_labels[result]}
-- 신뢰도: {confidence*100:.1f}%
+[보고서 작성 지침]
+- 3~4문장으로 간결하게 작성
+- 법정 제출 가능한 객관적 표현 사용
+- "본 영상은 [{result_labels[result]}] 판정을 받았으며"로 시작
+- 핵심 근거 수치를 명확히 제시
+- 공식 보고서 어투 (하십시오체)
+- 전문 용어 사용 시 괄호 안에 영문 병기
 
-# 지침:
-1. 3~4문장 이내로 작성
-2. 전문 용어를 사용하되 이해하기 쉽게
-3. 주요 근거를 명확히 제시
-4. "이 영상은 [{result_labels[result]}] 상태이며..."로 시작
-5. 존댓말 사용
-6. 법의학적 객관성 유지
-
-감정 보고서:"""
+[감정 의견]:"""
 
     try:
         # OpenAI API 호출
@@ -180,15 +187,24 @@ async def generate_gpt_report(
             messages=[
                 {
                     "role": "system",
-                    "content": "당신은 대한민국 사이버 수사대의 딥페이크 감정 전문가입니다. 객관적이고 전문적인 분석 보고서를 작성합니다."
+                    "content": """당신은 대한민국 국가정보원 산하 디지털 포렌식 연구소의 수석 분석관입니다. 
+                    
+귀하의 보고서는 법정 증거로 사용될 수 있으며, 다음 원칙을 준수해야 합니다:
+1. 객관적이고 단호한 어조
+2. 공식 감정서 형식 준수
+3. 전문 기술 용어 정확히 사용
+4. 수치 기반의 논리적 근거 제시
+5. 하십시오체 사용
+
+보고서는 검찰, 법원, 정보기관에 제출될 수 있으므로 최고 수준의 전문성과 신뢰성을 유지하십시오."""
                 },
                 {
                     "role": "user",
                     "content": prompt
                 }
             ],
-            temperature=0.7,
-            max_tokens=300
+            temperature=0.5,  # 더 객관적이고 일관된 답변을 위해 낮춤
+            max_tokens=350
         )
         
         report = response.choices[0].message.content.strip()
@@ -197,7 +213,7 @@ async def generate_gpt_report(
     except Exception as e:
         # OpenAI API 호출 실패 시 기본 리포트 반환
         print(f"OpenAI API Error: {e}")
-        return f"이 영상은 [{result_labels[result]}] 상태이며, 분석 신뢰도는 {confidence*100:.1f}%입니다. 주요 분석 지표로는 입술 동기화({metrics.lip_sync_score:.1f}점), 조명 일관성({metrics.lighting_consistency:.1f}점), 얼굴 인공물 지수({metrics.facial_artifacts:.1f}점)가 종합적으로 검토되었습니다."
+        return f"""본 영상은 [{result_labels[result]}] 판정을 받았으며, 분석 신뢰도는 {confidence*100:.1f}%입니다. 주요 감정 근거로는 음성-입술 동기화(MAR) {metrics.lip_sync_score:.1f}점, 조명 일관성 분석 {metrics.lighting_consistency:.1f}점, 얼굴 아티팩트 검출 {metrics.facial_artifacts:.1f}점이 종합적으로 검토되었습니다. 본 감정 결과는 현행 디지털 포렌식 기준에 부합하는 것으로 판단됩니다."""
 
 
 @app.get("/")
@@ -207,9 +223,9 @@ async def root():
     """
     return {
         "service": "DeepSentinel AI Server",
-        "version": "2.0.0",
+        "version": "2.1.0",
         "status": "running",
-        "features": ["deepfake_detection", "gpt_report_generation"]
+        "features": ["deepfake_detection", "gpt_report_generation", "realtime_analysis"]
     }
 
 
@@ -223,7 +239,8 @@ async def health_check():
     return {
         "status": "healthy",
         "timestamp": time.time(),
-        "openai": openai_status
+        "openai": openai_status,
+        "websocket": "enabled"
     }
 
 
@@ -289,8 +306,142 @@ async def analyze_video(video: UploadFile = File(...)):
         )
 
 
-# asyncio import 추가
-import asyncio
+@app.post("/api/analyze-url")
+async def analyze_url(request: URLAnalysisRequest):
+    """
+    URL 기반 영상 분석 엔드포인트 (스켈레톤)
+    
+    Args:
+        request: URL 분석 요청 (유튜브, 릴스 등)
+        
+    Returns:
+        dict: 분석 결과 (더미)
+    """
+    print(f"🔗 Analyzing URL: {request.url}")
+    
+    # 더미 응답 (향후 youtube-dl, yt-dlp 등으로 구현)
+    await asyncio.sleep(1)
+    
+    return {
+        "status": "success",
+        "message": "URL 분석은 현재 개발 중입니다.",
+        "url": request.url,
+        "platform": request.platform or "unknown"
+    }
+
+
+@app.websocket("/ws/analyze")
+async def websocket_analyze(websocket: WebSocket):
+    """
+    실시간 프레임 분석용 WebSocket 엔드포인트
+    
+    Usage:
+        클라이언트가 웹캠 프레임을 base64로 인코딩하여 전송하면
+        MediaPipe로 실시간 분석 결과를 스트리밍
+    """
+    await websocket.accept()
+    print("🔌 WebSocket connection established")
+    
+    # FaceAnalyzer 초기화
+    try:
+        from face_analyzer import FaceAnalyzer
+        import base64
+        import cv2
+        
+        analyzer = FaceAnalyzer()
+        frame_skip = 0  # 프레임 스킵 카운터 (지연 시간 감소용)
+        
+        while True:
+            # 클라이언트로부터 프레임 수신
+            data = await websocket.receive_text()
+            frame_data = json.loads(data)
+            
+            # 프레임 스킵 로직 (2프레임마다 1번씩 분석)
+            frame_skip += 1
+            if frame_skip % 2 != 0:
+                continue
+            
+            try:
+                # Base64 디코딩
+                img_data = base64.b64decode(frame_data.get('frame', ''))
+                nparr = np.frombuffer(img_data, np.uint8)
+                frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+                
+                if frame is None:
+                    await websocket.send_json({
+                        "error": "Invalid frame data",
+                        "timestamp": time.time()
+                    })
+                    continue
+                
+                # MediaPipe 얼굴 분석
+                analysis_result = analyzer.analyze_frame(frame)
+                
+                if analysis_result is None:
+                    # 얼굴 미검출
+                    await websocket.send_json({
+                        "face_detected": False,
+                        "timestamp": time.time(),
+                        "message": "얼굴이 감지되지 않았습니다"
+                    })
+                    continue
+                
+                # 종합 점수 계산
+                metrics_obj = AnalysisMetrics(
+                    eye_blink_rate=analysis_result['eye_blink_rate'],
+                    lip_sync_score=analysis_result['lip_sync_score'],
+                    lighting_consistency=analysis_result['lighting_consistency'],
+                    facial_artifacts=analysis_result['facial_artifacts'],
+                    texture_quality=analysis_result['texture_quality'],
+                    motion_smoothness=analysis_result['motion_smoothness']
+                )
+                
+                result, confidence = calculate_overall_score(metrics_obj)
+                
+                # 결과 전송
+                response = {
+                    "timestamp": time.time(),
+                    "result": result,
+                    "confidence": confidence,
+                    "face_detected": True,
+                    "metrics": {
+                        "eye_blink_rate": round(analysis_result['eye_blink_rate'], 1),
+                        "lip_sync_score": round(analysis_result['lip_sync_score'], 1),
+                        "lighting_consistency": round(analysis_result['lighting_consistency'], 1),
+                        "facial_artifacts": round(analysis_result['facial_artifacts'], 1),
+                        "texture_quality": round(analysis_result['texture_quality'], 1),
+                        "motion_smoothness": round(analysis_result['motion_smoothness'], 1),
+                    },
+                    "details": {
+                        "ear": round(analysis_result.get('ear', 0), 3),
+                        "mar": round(analysis_result.get('mar', 0), 3),
+                        "angles": {
+                            "pitch": round(analysis_result['angles']['pitch'], 1),
+                            "yaw": round(analysis_result['angles']['yaw'], 1),
+                            "roll": round(analysis_result['angles']['roll'], 1)
+                        }
+                    }
+                }
+                
+                await websocket.send_json(response)
+                print(f"📡 Sent realtime analysis: {result} ({confidence:.2%})")
+                
+            except Exception as e:
+                print(f"⚠️ Frame analysis error: {str(e)}")
+                await websocket.send_json({
+                    "error": str(e),
+                    "timestamp": time.time()
+                })
+                
+    except WebSocketDisconnect:
+        print("🔌 WebSocket connection closed")
+    except Exception as e:
+        print(f"❌ WebSocket error: {str(e)}")
+        await websocket.close()
+    finally:
+        # 분석기 정리
+        if 'analyzer' in locals():
+            analyzer.reset()
 
 
 if __name__ == "__main__":
